@@ -31,8 +31,49 @@ ENTITY_CANONICAL_NAME = os.getenv("SYNC_ENTITY_NAME", "Vulcan Elements Inc.")
 FY_START = int(os.getenv("SYNC_FY_START", "2020"))
 FY_END = int(os.getenv("SYNC_FY_END", "2026"))
 MAX_AWARD_ROWS = int(os.getenv("SYNC_MAX_ROWS", "250"))
+AWARD_GROUPING = os.getenv("SYNC_AWARD_GROUPING", "all")
 AIRTABLE_BATCH_SIZE = 10
 REQUEST_DELAY_SECONDS = 0.25
+
+# USAspending award_type_codes reference:
+# Contracts: A, B, C, D
+# IDVs: IDV_A, IDV_B, IDV_B_A, IDV_B_B, IDV_B_C, IDV_C, IDV_D, IDV_E
+# Grants/assistance: 02, 03, 04, 05
+# Loans: 07, 08
+# Direct payments: 06, 10, 09, 11
+CONTRACT_CODES = ["A", "B", "C", "D"]
+IDV_CODES = ["IDV_A", "IDV_B", "IDV_B_A", "IDV_B_B", "IDV_B_C", "IDV_C", "IDV_D", "IDV_E"]
+ASSISTANCE_CODES = ["02", "03", "04", "05", "06", "07", "08", "09", "10", "11"]
+ALL_AWARD_TYPE_CODES = CONTRACT_CODES + IDV_CODES + ASSISTANCE_CODES
+
+AWARD_TYPE_CODES_BY_GROUPING = {
+    "all": ALL_AWARD_TYPE_CODES,
+    "contract": CONTRACT_CODES,
+    "assistance": ASSISTANCE_CODES,
+}
+
+# Fields valid on the /search/spending_by_award/ endpoint (award-level search).
+# NOTE: "Action Date" and "Federal Action Obligation" are transaction-search fields
+# and are NOT valid here — using them causes a 422. Parent Recipient Name/UEI and
+# NAICS/PSC description fields are also not part of this endpoint's schema.
+AWARD_SEARCH_FIELDS = [
+    "Award ID",
+    "generated_internal_id",
+    "Recipient Name",
+    "Recipient UEI",
+    "Awarding Agency",
+    "Funding Agency",
+    "Description",
+    "Place of Performance City Code",
+    "Place of Performance State Code",
+    "Place of Performance Country Code",
+    "Start Date",
+    "End Date",
+    "Award Amount",
+    "Total Outlays",
+    "Base Obligation Date",
+    "Last Modified Date",
+]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -216,14 +257,8 @@ def make_raw_hash(row: dict[str, Any]) -> str:
         as_text(field_value(row, "generated_internal_id")),
         as_text(field_value(row, "Award ID", "award_id")),
         as_text(field_value(row, "Recipient Name", "recipient_name")),
-        as_text(field_value(row, "Action Date", "action_date")),
-        as_text(
-            field_value(
-                row,
-                "Federal Action Obligation",
-                "federal_action_obligation",
-            )
-        ),
+        as_text(field_value(row, "Base Obligation Date", "base_obligation_date")),
+        as_text(field_value(row, "Award Amount", "award_amount")),
     ]
 
     raw_key = "||".join(key_parts)
@@ -237,6 +272,10 @@ def usaspending_post(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers={"Content-Type": "application/json"},
         timeout=60,
     )
+
+    if response.status_code == 422:
+        logging.error("USAspending 422 response body: %s", response.text)
+
     response.raise_for_status()
     return response.json()
 
@@ -251,52 +290,32 @@ def build_time_periods(start_fy: int, end_fy: int) -> list[dict[str, str]]:
     ]
 
 
-def search_usaspending_awards(
-    recipient_search_text: str,
-    fiscal_year_start: int,
-    fiscal_year_end: int,
-    max_rows: int,
-) -> list[dict[str, Any]]:
-    fields = [
-        "Award ID",
-        "generated_internal_id",
-        "Recipient Name",
-        "Recipient UEI",
-        "Parent Recipient Name",
-        "Parent Recipient UEI",
-        "Award Type",
-        "Award Amount",
-        "Federal Action Obligation",
-        "Start Date",
-        "End Date",
-        "Action Date",
-        "Awarding Agency",
-        "Funding Agency",
-        "Award Description",
-        "NAICS Code",
-        "NAICS Description",
-        "PSC Code",
-        "PSC Description",
-        "Place of Performance City Code",
-        "Place of Performance State Code",
-        "Place of Performance Country Code",
-    ]
+def build_filters(recipient_search_text: str) -> dict[str, Any]:
+    award_type_codes = AWARD_TYPE_CODES_BY_GROUPING.get(
+        AWARD_GROUPING, ALL_AWARD_TYPE_CODES
+    )
 
-    filters = {
+    return {
         "recipient_search_text": [recipient_search_text],
-        "time_period": build_time_periods(fiscal_year_start, fiscal_year_end),
+        "time_period": build_time_periods(FY_START, FY_END),
+        "award_type_codes": award_type_codes,
     }
 
+
+def search_usaspending_awards(
+    recipient_search_text: str,
+    max_rows: int,
+) -> list[dict[str, Any]]:
     page = 1
     rows: list[dict[str, Any]] = []
 
     while len(rows) < max_rows:
         payload = {
-            "filters": filters,
-            "fields": fields,
+            "filters": build_filters(recipient_search_text),
+            "fields": AWARD_SEARCH_FIELDS,
             "page": page,
             "limit": 100,
-            "sort": "Action Date",
+            "sort": "Award Amount",
             "order": "desc",
             "subawards": False,
         }
@@ -392,13 +411,14 @@ def map_raw_record(
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     raw_hash = make_raw_hash(row)
+    base_obligation_date = as_date(field_value(row, "Base Obligation Date"))
 
     return {
         "import_batch_id": import_batch_id,
         "pull_date": now,
         "query_scope": (
             f"Recipient search: {ENTITY_SEARCH}; "
-            f"FY{FY_START}-FY{FY_END}; all award types"
+            f"FY{FY_START}-FY{FY_END}; grouping={AWARD_GROUPING}"
         ),
         "source_url": "https://api.usaspending.gov/api/v2/search/spending_by_award/",
         "generated_internal_id": as_text(field_value(row, "generated_internal_id")),
@@ -407,39 +427,14 @@ def map_raw_record(
             field_value(row, "Recipient Name", "recipient_name")
         ),
         "recipient_uei_raw": as_text(field_value(row, "Recipient UEI")),
-        "parent_recipient_name_raw": as_text(
-            field_value(row, "Parent Recipient Name")
-        ),
-        "parent_recipient_uei_raw": as_text(
-            field_value(row, "Parent Recipient UEI")
-        ),
         "awarding_agency_raw": as_text(field_value(row, "Awarding Agency")),
         "funding_agency_raw": as_text(field_value(row, "Funding Agency")),
-        "award_type_raw": as_text(field_value(row, "Award Type")),
-        "action_date_raw": as_date(field_value(row, "Action Date")),
+        "action_date_raw": base_obligation_date,
         "start_date_raw": as_date(field_value(row, "Start Date")),
         "end_date_raw": as_date(field_value(row, "End Date")),
         "award_amount_raw": as_number(field_value(row, "Award Amount")),
-        "obligated_amount_raw": as_number(
-            field_value(row, "Federal Action Obligation")
-        ),
-        "description_raw": as_text(field_value(row, "Award Description")),
-        "naics_raw": " - ".join(
-            value
-            for value in [
-                as_text(field_value(row, "NAICS Code")),
-                as_text(field_value(row, "NAICS Description")),
-            ]
-            if value
-        ),
-        "psc_raw": " - ".join(
-            value
-            for value in [
-                as_text(field_value(row, "PSC Code")),
-                as_text(field_value(row, "PSC Description")),
-            ]
-            if value
-        ),
+        "obligated_amount_raw": as_number(field_value(row, "Total Outlays")),
+        "description_raw": as_text(field_value(row, "Description")),
         "place_of_performance_raw": " / ".join(
             value
             for value in [
@@ -454,60 +449,36 @@ def map_raw_record(
     }
 
 
-def infer_award_id_type(award_id: str, award_type: str) -> str:
-    award_type = award_type.lower()
-
-    if "contract" in award_type:
-        return "PIID"
-
-    if (
-        "grant" in award_type
-        or "cooperative" in award_type
-        or "assistance" in award_type
-    ):
-        return "FAIN"
-
-    return "Other"
-
-
 def map_award_record(
     row: dict[str, Any],
     import_batch_id: str,
     entity_airtable_record_id: str,
 ) -> dict[str, Any]:
     award_id = as_text(field_value(row, "Award ID", "award_id"))
-    award_type = as_text(field_value(row, "Award Type"))
-    obligation = as_number(field_value(row, "Federal Action Obligation"))
     award_amount = as_number(field_value(row, "Award Amount"))
+    total_outlays = as_number(field_value(row, "Total Outlays"))
+    base_obligation_date = as_date(field_value(row, "Base Obligation Date"))
 
     return {
         "Entity_ID": ENTITY_ID,
         "Entity": [entity_airtable_record_id],
         "generated_internal_id": as_text(field_value(row, "generated_internal_id")),
         "award_id": award_id,
-        "award_id_type": infer_award_id_type(award_id, award_type),
-        "award_type": award_type,
+        "award_id_type": "Other",
+        "award_type": AWARD_GROUPING,
         "awarding_agency": as_text(field_value(row, "Awarding Agency")),
         "funding_agency": as_text(field_value(row, "Funding Agency")),
         "recipient_name_reported": as_text(
             field_value(row, "Recipient Name", "recipient_name")
         ),
-        "recipient_parent_name": as_text(
-            field_value(row, "Parent Recipient Name")
-        ),
         "recipient_UEI": as_text(field_value(row, "Recipient UEI")),
-        "parent_recipient_UEI": as_text(
-            field_value(row, "Parent Recipient UEI")
-        ),
-        "action_date": as_date(field_value(row, "Action Date")),
+        "action_date": base_obligation_date,
         "period_start": as_date(field_value(row, "Start Date")),
         "period_end": as_date(field_value(row, "End Date")),
-        "transaction_amount": obligation if obligation is not None else award_amount,
-        "total_obligation": obligation,
+        "transaction_amount": award_amount,
+        "total_obligation": total_outlays if total_outlays is not None else award_amount,
         "award_ceiling": award_amount,
-        "description": as_text(field_value(row, "Award Description")),
-        "naics_code": as_text(field_value(row, "NAICS Code")),
-        "psc_code": as_text(field_value(row, "PSC Code")),
+        "description": as_text(field_value(row, "Description")),
         "place_of_performance": " / ".join(
             value
             for value in [
@@ -536,8 +507,6 @@ def sync() -> None:
 
     rows = search_usaspending_awards(
         recipient_search_text=ENTITY_SEARCH,
-        fiscal_year_start=FY_START,
-        fiscal_year_end=FY_END,
         max_rows=MAX_AWARD_ROWS,
     )
 
