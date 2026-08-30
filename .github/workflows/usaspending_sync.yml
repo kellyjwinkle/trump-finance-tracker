@@ -1,0 +1,37 @@
+name: USAspending to Airtable Sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 11 * * 1"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run USAspending sync
+        env:
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_ENTITY_TABLE: Entity
+          AIRTABLE_AWARDS_TABLE: Gov_Awards
+          AIRTABLE_RAW_TABLE: Import_Raw_USASpending
+          SYNC_ENTITY_ID: E008
+          SYNC_ENTITY_SEARCH: VULCAN ELEMENTS INC
+          SYNC_ENTITY_NAME: Vulcan Elements Inc.
+          SYNC_FY_START: "2020"
+          SYNC_FY_END: "2026"
+          SYNC_MAX_ROWS: "250"
+        run: python sync_usaspending_to_airtable.py
