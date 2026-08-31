@@ -40,6 +40,9 @@ jobs:
           - entity_id: E017
             entity_search: "JFB CONSTRUCTION HOLDINGS"
             entity_name: "JFB Construction Holdings"
+          - entity_id: E018
+            entity_search: "XTEND"
+            entity_name: "Xtend"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
