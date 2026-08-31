@@ -35,27 +35,28 @@ AWARD_GROUPING = os.getenv("SYNC_AWARD_GROUPING", "all")
 AIRTABLE_BATCH_SIZE = 10
 REQUEST_DELAY_SECONDS = 0.25
 
-# USAspending award_type_codes reference:
-# Contracts: A, B, C, D
-# IDVs: IDV_A, IDV_B, IDV_B_A, IDV_B_B, IDV_B_C, IDV_C, IDV_D, IDV_E
-# Grants/assistance: 02, 03, 04, 05
-# Loans: 07, 08
-# Direct payments: 06, 10, 09, 11
+# USAspending award_type_codes reference (contracts + assistance only).
+# IDV codes are deliberately excluded: IDVs (Indefinite Delivery Vehicles) are
+# umbrella agreements with a different data shape than regular contracts, and
+# mixing them into the same request with contract/assistance fields caused a 422.
 CONTRACT_CODES = ["A", "B", "C", "D"]
-IDV_CODES = ["IDV_A", "IDV_B", "IDV_B_A", "IDV_B_B", "IDV_B_C", "IDV_C", "IDV_D", "IDV_E"]
 ASSISTANCE_CODES = ["02", "03", "04", "05", "06", "07", "08", "09", "10", "11"]
-ALL_AWARD_TYPE_CODES = CONTRACT_CODES + IDV_CODES + ASSISTANCE_CODES
 
+# Default to contracts only. This is the confirmed-working combination per
+# USAspending's own documented example payloads. Assistance (grants/loans) can
+# be requested separately via SYNC_AWARD_GROUPING=assistance once validated.
 AWARD_TYPE_CODES_BY_GROUPING = {
-    "all": ALL_AWARD_TYPE_CODES,
+    "all": CONTRACT_CODES,
     "contract": CONTRACT_CODES,
     "assistance": ASSISTANCE_CODES,
 }
 
-# Fields valid on the /search/spending_by_award/ endpoint (award-level search).
-# NOTE: "Action Date" and "Federal Action Obligation" are transaction-search fields
-# and are NOT valid here — using them causes a 422. Parent Recipient Name/UEI and
-# NAICS/PSC description fields are also not part of this endpoint's schema.
+# Minimal confirmed-working field set for /search/spending_by_award/.
+# NOTE: "Action Date", "Federal Action Obligation", "Total Outlays", and
+# "Base Obligation Date" were removed — they either don't exist on this
+# endpoint or behave inconsistently (zeroing results) when combined with
+# certain award_type_codes. "NAICS Description"/"PSC Description"/Parent
+# Recipient fields were also removed as invalid for this endpoint.
 AWARD_SEARCH_FIELDS = [
     "Award ID",
     "generated_internal_id",
@@ -70,9 +71,7 @@ AWARD_SEARCH_FIELDS = [
     "Start Date",
     "End Date",
     "Award Amount",
-    "Total Outlays",
-    "Base Obligation Date",
-    "Last Modified Date",
+    "NAICS",
 ]
 
 logging.basicConfig(
@@ -257,7 +256,7 @@ def make_raw_hash(row: dict[str, Any]) -> str:
         as_text(field_value(row, "generated_internal_id")),
         as_text(field_value(row, "Award ID", "award_id")),
         as_text(field_value(row, "Recipient Name", "recipient_name")),
-        as_text(field_value(row, "Base Obligation Date", "base_obligation_date")),
+        as_text(field_value(row, "Start Date", "start_date")),
         as_text(field_value(row, "Award Amount", "award_amount")),
     ]
 
@@ -292,7 +291,7 @@ def build_time_periods(start_fy: int, end_fy: int) -> list[dict[str, str]]:
 
 def build_filters(recipient_search_text: str) -> dict[str, Any]:
     award_type_codes = AWARD_TYPE_CODES_BY_GROUPING.get(
-        AWARD_GROUPING, ALL_AWARD_TYPE_CODES
+        AWARD_GROUPING, CONTRACT_CODES
     )
 
     return {
@@ -411,7 +410,7 @@ def map_raw_record(
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     raw_hash = make_raw_hash(row)
-    base_obligation_date = as_date(field_value(row, "Base Obligation Date"))
+    start_date = as_date(field_value(row, "Start Date"))
 
     return {
         "import_batch_id": import_batch_id,
@@ -429,12 +428,13 @@ def map_raw_record(
         "recipient_uei_raw": as_text(field_value(row, "Recipient UEI")),
         "awarding_agency_raw": as_text(field_value(row, "Awarding Agency")),
         "funding_agency_raw": as_text(field_value(row, "Funding Agency")),
-        "action_date_raw": base_obligation_date,
-        "start_date_raw": as_date(field_value(row, "Start Date")),
+        "action_date_raw": start_date,
+        "start_date_raw": start_date,
         "end_date_raw": as_date(field_value(row, "End Date")),
         "award_amount_raw": as_number(field_value(row, "Award Amount")),
-        "obligated_amount_raw": as_number(field_value(row, "Total Outlays")),
+        "obligated_amount_raw": as_number(field_value(row, "Award Amount")),
         "description_raw": as_text(field_value(row, "Description")),
+        "naics_raw": as_text(field_value(row, "NAICS")),
         "place_of_performance_raw": " / ".join(
             value
             for value in [
@@ -456,15 +456,14 @@ def map_award_record(
 ) -> dict[str, Any]:
     award_id = as_text(field_value(row, "Award ID", "award_id"))
     award_amount = as_number(field_value(row, "Award Amount"))
-    total_outlays = as_number(field_value(row, "Total Outlays"))
-    base_obligation_date = as_date(field_value(row, "Base Obligation Date"))
+    start_date = as_date(field_value(row, "Start Date"))
 
     return {
         "Entity_ID": ENTITY_ID,
         "Entity": [entity_airtable_record_id],
         "generated_internal_id": as_text(field_value(row, "generated_internal_id")),
         "award_id": award_id,
-        "award_id_type": "Other",
+        "award_id_type": "PIID" if AWARD_GROUPING != "assistance" else "FAIN",
         "award_type": AWARD_GROUPING,
         "awarding_agency": as_text(field_value(row, "Awarding Agency")),
         "funding_agency": as_text(field_value(row, "Funding Agency")),
@@ -472,13 +471,14 @@ def map_award_record(
             field_value(row, "Recipient Name", "recipient_name")
         ),
         "recipient_UEI": as_text(field_value(row, "Recipient UEI")),
-        "action_date": base_obligation_date,
-        "period_start": as_date(field_value(row, "Start Date")),
+        "action_date": start_date,
+        "period_start": start_date,
         "period_end": as_date(field_value(row, "End Date")),
         "transaction_amount": award_amount,
-        "total_obligation": total_outlays if total_outlays is not None else award_amount,
+        "total_obligation": award_amount,
         "award_ceiling": award_amount,
         "description": as_text(field_value(row, "Description")),
+        "naics_code": as_text(field_value(row, "NAICS")),
         "place_of_performance": " / ".join(
             value
             for value in [
