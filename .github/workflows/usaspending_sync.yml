@@ -8,7 +8,38 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - entity_id: E008
+            entity_search: "VULCAN ELEMENTS INC"
+            entity_name: "Vulcan Elements Inc."
+          - entity_id: E009
+            entity_search: "SPACE EXPLORATION TECHNOLOGIES CORP"
+            entity_name: "SpaceX"
+          - entity_id: E010
+            entity_search: "ANDURIL INDUSTRIES"
+            entity_name: "Anduril Industries"
+          - entity_id: E011
+            entity_search: "HADRIAN"
+            entity_name: "Hadrian"
+          - entity_id: E012
+            entity_search: "AXIOM SPACE"
+            entity_name: "Axiom Space"
+          - entity_id: E014
+            entity_search: "REFLECTION AI"
+            entity_name: "Reflection AI"
+          - entity_id: E019
+            entity_search: "UNUSUAL MACHINES"
+            entity_name: "Unusual Machines"
+          - entity_id: E015
+            entity_search: "POWERUS"
+            entity_name: "Powerus"
+          - entity_id: E017
+            entity_search: "JFB CONSTRUCTION HOLDINGS"
+            entity_name: "JFB Construction Holdings"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -21,17 +52,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run USAspending sync
+      - name: Run USAspending sync for ${{ matrix.entity_name }}
         env:
           AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_ENTITY_TABLE: Entity
           AIRTABLE_AWARDS_TABLE: Gov_Awards
           AIRTABLE_RAW_TABLE: Import_Raw_USASpending
-          SYNC_ENTITY_ID: E008
-          SYNC_ENTITY_SEARCH: VULCAN ELEMENTS INC
-          SYNC_ENTITY_NAME: Vulcan Elements Inc.
+          SYNC_ENTITY_ID: ${{ matrix.entity_id }}
+          SYNC_ENTITY_SEARCH: ${{ matrix.entity_search }}
+          SYNC_ENTITY_NAME: ${{ matrix.entity_name }}
           SYNC_FY_START: "2020"
           SYNC_FY_END: "2026"
           SYNC_MAX_ROWS: "250"
+          SYNC_AWARD_GROUPING: "all"
         run: python sync_usaspending_to_airtable.py
