@@ -129,7 +129,7 @@ def fetch_subawards(recipient_search, fy_start, fy_end, max_rows):
         ],
         "page": 1,
         "limit": min(max_rows, 100),
-        "sort": "Sub-Award Date",
+        "sort": "action_date",
         "order": "desc",
     }
 
