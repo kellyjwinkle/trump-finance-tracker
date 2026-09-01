@@ -98,8 +98,12 @@ all_entities = sorted(df["entity"].dropna().unique().tolist())
 selected_entities = st.multiselect("Prime recipient", all_entities, default=all_entities)
 
 valid_fys = sorted(df["fiscal_year"].dropna().astype(int).unique().tolist())
-if valid_fys:
-    fy_range = st.slider("Fiscal year range", min_value=min(valid_fys), max_value=max(valid_fys), value=(min(valid_fys), max(valid_fys)))
+if len(valid_fys) >= 2:
+    fy_min, fy_max = min(valid_fys), max(valid_fys)
+    fy_range = st.slider("Fiscal year range", min_value=fy_min, max_value=fy_max, value=(fy_min, fy_max))
+elif len(valid_fys) == 1:
+    st.caption(f"All records fall in fiscal year {valid_fys[0]}. Fiscal-year filtering will appear once more than one year of data is available.")
+    fy_range = (valid_fys[0], valid_fys[0])
 else:
     fy_range = None
 
@@ -125,7 +129,7 @@ st.subheader("Top subawardees")
 by_subawardee = filtered.groupby("subawardee")["amount"].sum().sort_values(ascending=False).head(25)
 st.bar_chart(by_subawardee)
 
-if filtered["fiscal_year"].notna().any():
+if filtered["fiscal_year"].notna().any() and filtered["fiscal_year"].nunique() >= 2:
     st.subheader("Subaward amounts by fiscal year")
     by_year = filtered.pivot_table(index="fiscal_year", columns="entity", values="amount", aggfunc="sum", fill_value=0).sort_index()
     st.bar_chart(by_year)
