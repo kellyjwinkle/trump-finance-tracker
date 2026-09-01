@@ -90,7 +90,8 @@ def airtable_update(base_id, table_name, headers, records):
 
 
 def get_entity_record_id(base_id, entity_table, headers, entity_id):
-    formula = "{Entity_ID}='{}'".format(entity_id.replace("'", "\\'"))
+    safe_id = entity_id.replace("'", "\\'")
+    formula = "{{Entity_ID}}='{}'".format(safe_id)
     url = f"{AIRTABLE_API}/{base_id}/{entity_table}"
     resp = requests.get(url, headers=headers, params={"filterByFormula": formula, "pageSize": 1}, timeout=60)
     resp.raise_for_status()
