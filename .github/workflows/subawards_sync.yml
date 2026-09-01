@@ -1,0 +1,86 @@
+name: USAspending Subawards to Airtable Sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 11 * * 1"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - entity_id: E008
+            entity_search: "VULCAN ELEMENTS INC"
+            entity_name: "Vulcan Elements Inc."
+          - entity_id: E009
+            entity_search: "SPACE EXPLORATION TECHNOLOGIES CORP"
+            entity_name: "SpaceX"
+          - entity_id: E010
+            entity_search: "ANDURIL INDUSTRIES"
+            entity_name: "Anduril Industries"
+          - entity_id: E011
+            entity_search: "HADRIAN"
+            entity_name: "Hadrian"
+          - entity_id: E012
+            entity_search: "AXIOM SPACE"
+            entity_name: "Axiom Space"
+          - entity_id: E014
+            entity_search: "REFLECTION AI"
+            entity_name: "Reflection AI"
+          - entity_id: E019
+            entity_search: "UNUSUAL MACHINES"
+            entity_name: "Unusual Machines"
+          - entity_id: E015
+            entity_search: "POWERUS"
+            entity_name: "Powerus"
+          - entity_id: E017
+            entity_search: "JFB CONSTRUCTION HOLDINGS"
+            entity_name: "JFB Construction Holdings"
+          - entity_id: E018
+            entity_search: "XTEND"
+            entity_name: "Xtend"
+          - entity_id: E081
+            entity_search: "CEREBRAS SYSTEMS"
+            entity_name: "Cerebras Systems"
+          - entity_id: E082
+            entity_search: "PSIQUANTUM"
+            entity_name: "PsiQuantum"
+          - entity_id: E083
+            entity_search: "FIREHAWK AEROSPACE"
+            entity_name: "Firehawk Aerospace"
+          - entity_id: E080
+            entity_search: "FOUNDATION FUTURE INDUSTRIES"
+            entity_name: "Foundation Future Industries"
+          - entity_id: E076
+            entity_search: "TRUMP MEDIA & TECHNOLOGY GROUP"
+            entity_name: "Trump Media & Technology Group"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run subawards sync for ${{ matrix.entity_name }}
+        env:
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_ENTITY_TABLE: Entity
+          AIRTABLE_SUBAWARDS_TABLE: Subawards
+          AIRTABLE_RAW_SUBAWARDS_TABLE: Import_Raw_Subawards
+          SYNC_ENTITY_ID: ${{ matrix.entity_id }}
+          SYNC_ENTITY_SEARCH: ${{ matrix.entity_search }}
+          SYNC_ENTITY_NAME: ${{ matrix.entity_name }}
+          SYNC_FY_START: "2020"
+          SYNC_FY_END: "2026"
+          SYNC_MAX_ROWS: "250"
+        run: python sync_subawards_to_airtable.py
