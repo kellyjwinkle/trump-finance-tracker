@@ -6,11 +6,17 @@ specific parent award at a time (it does not support a broad recipient-name
 or time-period search). It also only returns 6 fixed fields: id,
 subaward_number, description, action_date, amount, recipient_name.
 
-So this script works in two steps:
-  1. Find the entity's prime awards via /api/v2/search/spending_by_award/
-     (recipient_search_text + time_period + award_type_codes).
+Also: /api/v2/search/spending_by_award/ requires award_type_codes to come
+from a single type-group per request (contracts, grants, loans, idvs,
+direct_payments, other_financial_assistance cannot be mixed in one call).
+
+So this script works in three steps:
+  1. Find the entity's prime awards via /api/v2/search/spending_by_award/,
+     querying the 'contracts' group and the 'grants' group separately
+     (the two groups relevant to this project) and merging results.
   2. For each prime award's generated_internal_id, call /api/v2/subawards/
      to list its subawards.
+  3. Normalize and upsert into Airtable.
 
 Required environment variables:
   AIRTABLE_PAT
@@ -44,7 +50,11 @@ SPENDING_BY_AWARD_URL = f"{USASPENDING_BASE}/search/spending_by_award/"
 SUBAWARDS_URL = f"{USASPENDING_BASE}/subawards/"
 AIRTABLE_API = "https://api.airtable.com/v0"
 
-VALID_SUBAWARD_SORT_FIELDS = {"id", "subaward_number", "description", "action_date", "amount", "recipient_name"}
+# USAspending requires award_type_codes to come from exactly one of these groups per request.
+AWARD_TYPE_GROUPS = {
+    "contracts": ["A", "B", "C", "D"],
+    "grants": ["02", "03", "04", "05"],
+}
 
 
 def required(name):
@@ -118,13 +128,12 @@ def get_entity_record_id(base_id, entity_table, headers, entity_id):
     return records[0]["id"]
 
 
-def fetch_prime_awards(recipient_search, fy_start, fy_end, max_awards):
-    """Step 1: find the entity's prime awards so we know which award_ids to check for subawards."""
+def fetch_prime_awards_for_group(recipient_search, fy_start, fy_end, type_codes, max_awards):
     payload = {
         "filters": {
             "time_period": [{"start_date": f"{fy_start}-10-01", "end_date": f"{fy_end}-09-30"}],
             "recipient_search_text": [recipient_search],
-            "award_type_codes": ["A", "B", "C", "D", "02", "03", "04", "05", "07", "08", "09", "10", "11"],
+            "award_type_codes": type_codes,
         },
         "fields": ["Award ID", "Recipient Name", "Award Amount"],
         "sort": "Award Amount",
@@ -133,6 +142,8 @@ def fetch_prime_awards(recipient_search, fy_start, fy_end, max_awards):
         "limit": min(max_awards, 100),
     }
     resp = requests.post(SPENDING_BY_AWARD_URL, json=payload, timeout=90)
+    if resp.status_code == 400:
+        return [], payload
     resp.raise_for_status()
     body = resp.json()
     results = body.get("results", [])
@@ -142,6 +153,26 @@ def fetch_prime_awards(recipient_search, fy_start, fy_end, max_awards):
         if gid:
             awards.append({"generated_internal_id": gid, "Award ID": row.get("Award ID"), "Recipient Name": row.get("Recipient Name")})
     return awards, payload
+
+
+def fetch_prime_awards(recipient_search, fy_start, fy_end, max_awards):
+    """Step 1: find the entity's prime awards, querying each award-type group separately
+    (USAspending rejects requests that mix codes from different groups) and merging results."""
+    all_awards = []
+    seen_ids = set()
+    queries_used = []
+    for group_name, type_codes in AWARD_TYPE_GROUPS.items():
+        try:
+            group_awards, payload = fetch_prime_awards_for_group(recipient_search, fy_start, fy_end, type_codes, max_awards)
+        except requests.HTTPError as exc:
+            print(f"  Group '{group_name}' query failed: {exc}", file=sys.stderr)
+            continue
+        queries_used.append({"group": group_name, "payload": payload})
+        for award in group_awards:
+            if award["generated_internal_id"] not in seen_ids:
+                seen_ids.add(award["generated_internal_id"])
+                all_awards.append(award)
+    return all_awards[:max_awards], queries_used
 
 
 def fetch_subawards_for_award(award_id, max_rows):
@@ -192,12 +223,12 @@ def normalize(row, entity_id, entity_record_id, prime_award, batch_id):
         "subaward_id": subaward_number,
         "prime_award_id": str(prime_award_id or ""),
         "subawardee_name": recipient_name,
-        "subawardee_UEI": None,  # Not exposed by /api/v2/subawards/
+        "subawardee_UEI": None,
         "subaward_amount": amount,
         "action_date": action_date,
         "prime_award_recipient": prime_recipient,
         "prime_award_recipient_UEI": None,
-        "awarding_agency": None,  # Not exposed by /api/v2/subawards/
+        "awarding_agency": None,
         "funding_agency": None,
         "description": description,
         "place_of_performance": None,
@@ -253,7 +284,7 @@ def main():
     batch_id = f"SUBAWARDS-{entity_id}-{date.today().isoformat()}"
 
     print(f"Step 1: finding prime awards for {entity_name} ({recipient_search}) FY{fy_start}-FY{fy_end}...")
-    prime_awards, query_payload = fetch_prime_awards(recipient_search, fy_start, fy_end, max_prime_awards)
+    prime_awards, queries_used = fetch_prime_awards(recipient_search, fy_start, fy_end, max_prime_awards)
     print(f"Found {len(prime_awards)} prime awards to check for subawards.")
 
     normalized_rows = []
