@@ -12,8 +12,9 @@ direct_payments, other_financial_assistance cannot be mixed in one call).
 
 So this script works in three steps:
   1. Find the entity's prime awards via /api/v2/search/spending_by_award/,
-     querying the 'contracts' group and the 'grants' group separately
-     (the two groups relevant to this project) and merging results.
+     querying the 'contracts', 'grants', and 'loans' groups separately
+     (the groups relevant to this project, incl. Office of Strategic
+     Capital loans) and merging results.
   2. For each prime award's generated_internal_id, call /api/v2/subawards/
      to list its subawards.
   3. Normalize and upsert into Airtable.
@@ -54,6 +55,7 @@ AIRTABLE_API = "https://api.airtable.com/v0"
 AWARD_TYPE_GROUPS = {
     "contracts": ["A", "B", "C", "D"],
     "grants": ["02", "03", "04", "05"],
+    "loans": ["07", "08"],
 }
 
 
